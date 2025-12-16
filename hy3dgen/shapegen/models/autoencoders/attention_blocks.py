@@ -21,7 +21,7 @@ import torch.nn as nn
 from einops import rearrange
 from torch import Tensor
 
-from .attention_processors import CrossAttentionProcessor
+from .attention_processors import CrossAttentionProcessor, SparseFlashCrossAttentionProcessor
 from ...utils import logger
 
 scaled_dot_product_attention = nn.functional.scaled_dot_product_attention
@@ -434,6 +434,10 @@ class Transformer(nn.Module):
 
 
 class CrossAttentionDecoder(nn.Module):
+    def enable_sparse_flash(self, enabled: bool = True):
+        if enabled:
+            print('Enable sparse flash in CrossAttentionDecoder')
+            self.set_cross_attention_processor(SparseFlashCrossAttentionProcessor())
 
     def __init__(
         self,
@@ -479,7 +483,7 @@ class CrossAttentionDecoder(nn.Module):
         self.cross_attn_decoder.attn.attention.attn_processor = processor
 
     def set_default_cross_attention_processor(self):
-        self.cross_attn_decoder.attn.attention.attn_processor = CrossAttentionProcessor
+        self.cross_attn_decoder.attn.attention.attn_processor = CrossAttentionProcessor()
 
     def forward(self, queries=None, query_embeddings=None, latents=None):
         if query_embeddings is None:

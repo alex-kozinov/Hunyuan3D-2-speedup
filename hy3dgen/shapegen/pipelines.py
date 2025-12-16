@@ -255,6 +255,10 @@ class Hunyuan3DDiTPipeline:
         self.model = torch.compile(self.model)
         self.conditioner = torch.compile(self.conditioner)
 
+    def enable_sparse_flash(self, enabled: bool = True):
+        if enabled:
+            self.vae.enable_sparse_flash()
+
     def enable_flashvdm(
         self,
         enabled: bool = True,

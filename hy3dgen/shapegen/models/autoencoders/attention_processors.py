@@ -12,12 +12,75 @@
 # fine-tuning enabling code and other elements of the foregoing made publicly available
 # by Tencent in accordance with TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT.
 
+import math
 import os
 
 import torch
 import torch.nn.functional as F
+from torch import vmap
 
-scaled_dot_product_attention = F.scaled_dot_product_attention
+def _manual_scaled_dot_product_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    d_k = q.size(-1)
+    scale = 1.0 / math.sqrt(d_k)
+    attn_scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+    attn_probs = torch.softmax(attn_scores, dim=-1)
+    return torch.matmul(attn_probs, v)
+
+
+def _batched_sparse_mm(attn_probs: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """
+    attn_probs: [B, H, Lq, Lk] (dense, уже с занулёнными мелкими значениями)
+    v:          [B, H, Lk, Dv]
+    return:     [B, H, Lq, Dv]
+    """
+    b, h, l_q, l_k = attn_probs.shape
+    d_v = v.shape[-1]
+    orig_dtype = v.dtype
+
+    attn_flat = attn_probs.reshape(b * h, l_q, l_k)
+    v_flat    = v.reshape(b * h, l_k, d_v)
+
+    outs = []
+    for idx in range(b * h):
+        attn_single = attn_flat[idx].to(torch.float32)
+        v_single    = v_flat[idx].to(torch.float32)
+
+        attn_sparse = attn_single.to_sparse()
+        out_single  = torch.sparse.mm(attn_sparse, v_single)  # [Lq, Dv]
+
+        outs.append(out_single.to(orig_dtype))
+
+    out = torch.stack(outs, dim=0).reshape(b, h, l_q, d_v)
+    return out
+
+
+def _sparse_scaled_dot_product_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    sparsity_threshold: float = 1e-4,
+) -> torch.Tensor:
+    """
+    q, k, v: [B, H, L, D]
+    """
+    b, h, l_q, d_k = q.shape
+    _, _, l_k, d_v = v.shape
+    scale = 1.0 / math.sqrt(d_k)
+
+    attn_scores = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B,H,Lq,Lk]
+    attn_probs = torch.softmax(attn_scores, dim=-1)
+
+    if sparsity_threshold is not None:
+        attn_probs = torch.where(
+            attn_probs >= sparsity_threshold,
+            attn_probs,
+            torch.zeros_like(attn_probs),
+        )
+
+    out = _batched_sparse_mm(attn_probs, v)
+    return out
+
+scaled_dot_product_attention = _manual_scaled_dot_product_attention
 if os.environ.get('CA_USE_SAGEATTN', '0') == '1':
     try:
         from sageattention import sageattn
@@ -28,7 +91,12 @@ if os.environ.get('CA_USE_SAGEATTN', '0') == '1':
 
 class CrossAttentionProcessor:
     def __call__(self, attn, q, k, v):
-        out = scaled_dot_product_attention(q, k, v)
+        out = _manual_scaled_dot_product_attention(q, k, v)
+        return out
+
+class SparseFlashCrossAttentionProcessor:
+    def __call__(self, attn, q, k, v):
+        out = _sparse_scaled_dot_product_attention(q, k, v)
         return out
 
 

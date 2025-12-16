@@ -196,6 +196,10 @@ class VectsetVAE(nn.Module):
 
 
 class ShapeVAE(VectsetVAE):
+    def enable_sparse_flash(self, enabled: bool = True):
+        if enabled:
+            self.geo_decoder.enable_sparse_flash()
+
     def __init__(
         self,
         *,
